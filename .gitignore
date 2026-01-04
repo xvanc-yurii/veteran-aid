@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.sqlite3
+
+# venv
+.venv/
+venv/
+
+# DB (щоб випадково не комітити)
+app.db
+
+# env
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reports / temp
+*.pdf
+uploads/
