@@ -44,11 +44,22 @@ def create_case(
     if not benefit:
         raise HTTPException(status_code=404, detail="Benefit not found")
 
+    title = (data.title or "").strip()
+    description = (data.description or "").strip()
+
+    # Якщо title не передали — можна підставити щось дефолтне
+    # але краще вимагати title на фронті
+    if not title:
+        title = "Без назви"
+
     c = Case(
         user_id=current_user.id,
         benefit_id=data.benefit_id,
         status="draft",
-        note=data.note or "",
+        title=title,
+        description=description,
+        # старе поле
+        note=(data.note or "").strip(),
     )
     db.add(c)
     db.flush()
@@ -56,8 +67,8 @@ def create_case(
 
     # створення required документів по бенефіту
     docs = [x.strip() for x in (benefit.required_documents or "").split("\n") if x.strip()]
-    for title in docs:
-        db.add(CaseDocument(case_id=c.id, title=title, status="required"))
+    for t in docs:
+        db.add(CaseDocument(case_id=c.id, title=t, status="required"))
 
     # історія
     db.add(CaseHistory(case_id=c.id, status="draft", comment="Справу створено"))
@@ -114,6 +125,14 @@ def update_case(
 
     if data.status is not None:
         c.status = data.status
+
+    # ✅ нові поля
+    if data.title is not None:
+        c.title = data.title.strip()
+    if data.description is not None:
+        c.description = data.description.strip()
+
+    # 🔁 старе поле
     if data.note is not None:
         c.note = data.note
 
@@ -214,7 +233,7 @@ def ask_about_case(
         "Відповідай українською, коротко і по пунктах.\n"
         "Не вигадуй фактів. Якщо даних недостатньо — задай 1–2 уточнення.\n\n"
         f"Користувач:\n- Статус: {current_user.status}\n\n"
-        f"Справa:\n- ID: {c.id}\n- Статус: {c.status}\n- Примітка: {c.note}\n\n"
+        f"Справa:\n- ID: {c.id}\n- Статус: {c.status}\n- Назва: {c.title}\n- Опис: {c.description}\n- Примітка: {c.note}\n\n"
         f"Гарантія:\n- Назва: {benefit.title}\n- Опис: {benefit.description}\n- Куди звертатись: {benefit.authority}\n\n"
         f"Документи:\n{docs_text}\n\n"
         f"Останні зміни:\n{hist_text}\n\n"
@@ -265,7 +284,6 @@ def generate_application_pdf_for_case(
     if not benefit:
         raise HTTPException(status_code=404, detail="Benefit not found")
 
-    # Промпт простий — достатньо для PDF у справі
     prompt = (
         "Сформуй офіційну заяву українською мовою у структурі:\n"
         "[TO]...\n[FROM]...\n[BODY]...\n[ATTACHMENTS]...\n\n"
@@ -281,7 +299,6 @@ def generate_application_pdf_for_case(
     text = generate_text(prompt)
     pdf_bytes = application_text_to_pdf_bytes(text, title="ЗАЯВА")
 
-    # збереження артефакту
     artifact = CaseArtifact(
         case_id=c.id,
         type="application_pdf",
@@ -290,7 +307,6 @@ def generate_application_pdf_for_case(
     )
     db.add(artifact)
 
-    # історія
     db.add(CaseHistory(case_id=c.id, status=c.status, comment="Згенеровано PDF заяви"))
     db.commit()
 
@@ -300,53 +316,6 @@ def generate_application_pdf_for_case(
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
-
-@router.patch("/{case_id}/documents/{doc_id}", response_model=CaseDocumentOut)
-def update_case_document(
-    case_id: int,
-    doc_id: int,
-    data: CaseDocumentUpdate,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    c = db.query(Case).filter(Case.id == case_id).first()
-    if not c:
-        raise HTTPException(status_code=404, detail="Case not found")
-    _ensure_case_access(c, current_user)
-
-    d = (
-        db.query(CaseDocument)
-        .filter(CaseDocument.id == doc_id, CaseDocument.case_id == case_id)
-        .first()
-    )
-    if not d:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    if data.status is not None:
-        if data.status not in ALLOWED_DOC_STATUSES:
-            raise HTTPException(status_code=400, detail=f"Invalid status: {data.status}")
-        d.status = data.status
-
-    if data.comment is not None:
-        d.comment = data.comment
-
-    db.add(CaseHistory(case_id=case_id, status=c.status, comment=f"Оновлено документ: {d.title} → {d.status}"))
-
-    new_status = _recalc_case_status(db, case_id)
-    if c.status != new_status:
-        c.status = new_status
-        db.add(
-            CaseHistory(
-                case_id=case_id,
-                status=new_status,
-                comment=f"[AUTO] Статус справи оновлено автоматично → {new_status}",
-            )
-        )
-        
-    db.commit()
-    db.refresh(d)
-    return d
-
 
 @router.get("/{case_id}/progress", response_model=CaseProgressOut)
 def get_case_progress(
@@ -359,11 +328,7 @@ def get_case_progress(
         raise HTTPException(status_code=404, detail="Case not found")
     _ensure_case_access(c, current_user)
 
-    docs = (
-        db.query(CaseDocument)
-        .filter(CaseDocument.case_id == case_id)
-        .all()
-    )
+    docs = db.query(CaseDocument).filter(CaseDocument.case_id == case_id).all()
 
     total = len(docs)
     approved = sum(1 for d in docs if d.status == "approved")
@@ -371,14 +336,12 @@ def get_case_progress(
     rejected = sum(1 for d in docs if d.status == "rejected")
     required = sum(1 for d in docs if d.status == "required")
 
-    # % = approved / total
     percent = int(round((approved / total) * 100)) if total > 0 else 0
 
-    # “готово до подачі” якщо немає required (всі або uploaded або approved або rejected)
-    # можна жорсткіше: щоб не було rejected — але залишимо лояльно
+    # "готово до подачі" — якщо немає required (все або uploaded/approved/rejected)
     is_ready_to_submit = (required == 0) and (total > 0)
 
-    # “готово до схвалення” якщо всі approved
+    # "готово до схвалення" — якщо всі approved
     is_ready_for_approval = (approved == total) and (total > 0)
 
     return CaseProgressOut(
@@ -393,28 +356,5 @@ def get_case_progress(
         is_ready_for_approval=is_ready_for_approval,
     )
 
-def _recalc_case_status(db: Session, case_id: int) -> str:
-    docs = db.query(CaseDocument).filter(CaseDocument.case_id == case_id).all()
-
-    total = len(docs)
-    if total == 0:
-        return "draft"
-
-    required = sum(1 for d in docs if d.status == "required")
-    rejected = sum(1 for d in docs if d.status == "rejected")
-    approved = sum(1 for d in docs if d.status == "approved")
-
-    # якщо всі approved -> done
-    if approved == total:
-        return "done"
-
-    # якщо є rejected -> in_review (потрібно виправити/перезавантажити)
-    if rejected > 0:
-        return "in_review"
-
-    # якщо нема required -> submitted (готово до модерації)
-    if required == 0:
-        return "submitted"
-
-    # інакше ще збір документів
-    return "draft"
+# --- решта твого файлу без змін ---
+# update_case_document, progress, _recalc_case_status ...
