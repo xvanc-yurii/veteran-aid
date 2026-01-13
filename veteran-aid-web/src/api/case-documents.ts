@@ -43,20 +43,3 @@ export function getCaseDocumentDownloadUrl(caseId: number, docId: number) {
   return `${process.env.NEXT_PUBLIC_API_URL ?? "http://127.0.0.1:8000"}/cases/${caseId}/documents/${docId}/download`;
 }
 
-export async function downloadCaseDocument(caseId: number, docId: number) {
-  const res = await http.get(`/cases/${caseId}/documents/${docId}/download`, {
-    responseType: "blob",
-  });
-
-  const blob = new Blob([res.data]);
-  const url = window.URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `document_${docId}`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-
-  window.URL.revokeObjectURL(url);
-}
