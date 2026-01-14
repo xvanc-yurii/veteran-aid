@@ -48,3 +48,32 @@ export async function createCase(data: CaseCreatePayload) {
   const res = await http.post("/cases", data);
   return res.data;
 }
+
+function _filenameFromContentDisposition(cd?: string): string | null{
+  if(!cd) return null;
+
+  const m = /filename\*?=(?:UTF-8''|")?([^;"\n]+)"?/i.exec(cd);
+  if(!m?.[1]) return null;
+
+  try{
+    return decodeURIComponent(m[1]);
+  } catch {
+    return m[1];
+  }
+}
+
+export async function generateCaseApplicationPdf(caseId:number): Promise<{
+  blob: Blob;
+  filename: string;
+}> {
+  const res = await http.post(
+    `/cases/${caseId}/application/pdf`,
+    null,
+    {responseType: "blob"}
+  );
+
+  const cd = (res.headers?.["content-disposition"] as string | undefined) ?? undefined;
+  const filename = _filenameFromContentDisposition(cd) ?? `zayava_case_${caseId}.pdf`;
+
+  return {blob: res.data as Blob, filename};
+}

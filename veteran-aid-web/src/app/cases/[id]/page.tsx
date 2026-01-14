@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import type { VariantProps } from "class-variance-authority";
 
-import { fetchCaseById, type CaseItem } from "@/api/cases";
+import { fetchCaseById, generateCaseApplicationPdf, type CaseItem } from "@/api/cases";
 import { fetchBenefits, type BenefitItem } from "@/api/benefits";
 import {
   fetchCaseDocuments,
@@ -17,6 +17,8 @@ import {
   type CaseDocumentItem,
   type CaseDocumentStatus,
 } from "@/api/case-documents";
+import { fetchCaseHistory, type CaseHistoryItem } from "@/api/case-history";
+import { fetchCaseArtifacts, generateApplicationPdf, type CaseArtifactItem } from "@/api/case-artefacts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -106,6 +108,17 @@ function getAxiosDetail(e: unknown): string | null {
   return null;
 }
 
+function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "document.pdf";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export default function CaseDetailsPage() {
   const params = useParams<{ id: string }>();
   const qc = useQueryClient();
@@ -137,12 +150,25 @@ export default function CaseDetailsPage() {
     enabled: caseId !== null,
   });
 
+  const historyQ = useQuery({
+    queryKey: ["case-history", caseId],
+    queryFn: () => fetchCaseHistory(caseId as number),
+    enabled: caseId !== null,
+  });
+
+  const artifactsQ = useQuery({
+  queryKey: ["case-artifacts", caseId],
+  queryFn: () => fetchCaseArtifacts(caseId as number),
+  enabled: caseId !== null,
+});
+
   const updateDocM = useMutation({
     mutationFn: (payload: {
       docId: number;
       data: { status?: CaseDocumentStatus; comment?: string | null };
     }) => updateCaseDocument(caseId as number, payload.docId, payload.data),
     onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["case-history", caseId] });
       await qc.invalidateQueries({ queryKey: ["case-documents", caseId] });
       await qc.invalidateQueries({ queryKey: ["case", caseId] });
     },
@@ -153,11 +179,36 @@ export default function CaseDetailsPage() {
     mutationFn: (p: { docId: number; file: File }) =>
       uploadCaseDocument(caseId as number, p.docId, p.file),
     onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["case-history", caseId] });
       await qc.invalidateQueries({ queryKey: ["case-documents", caseId] });
       await qc.invalidateQueries({ queryKey: ["case", caseId] });
     },
     onError: (e) => setDocError(getAxiosDetail(e) ?? "Не вдалося завантажити файл"),
   });
+
+  // ✅ PDF генерація + скачування
+  const pdfM = useMutation({
+  mutationFn: () => generateApplicationPdf(caseId as number),
+  onSuccess: async (blob) => {
+    // ⬇️ 1) відкрити/скачати PDF
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `zayava_case_${caseId}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    // ⬇️ 2) оновити дані
+    await qc.invalidateQueries({ queryKey: ["case-artifacts", caseId] });
+    await qc.invalidateQueries({ queryKey: ["case-history", caseId] }); // ✅ крок 3
+  },
+  onError: (e) => setDocError(getAxiosDetail(e) ?? "Не вдалося згенерувати PDF"),
+});
+
+
+  
 
   if (caseId === null) {
     return (
@@ -213,8 +264,10 @@ export default function CaseDetailsPage() {
       </Link>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-3xl">{title}</CardTitle>
+        <CardHeader className="space-y-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <CardTitle className="text-3xl">{title}</CardTitle>
+          </div>
         </CardHeader>
 
         <CardContent className="space-y-2 text-sm">
@@ -284,15 +337,6 @@ export default function CaseDetailsPage() {
                           });
                         }}
                       >
-                        <SelectTrigger className="w-[180px]">
-                          <SelectValue placeholder="Статус" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="required">Потрібно</SelectItem>
-                          <SelectItem value="uploaded">Завантажено</SelectItem>
-                          <SelectItem value="approved">Погоджено</SelectItem>
-                          <SelectItem value="rejected">Відхилено</SelectItem>
-                        </SelectContent>
                       </Select>
                     </div>
                   </div>
@@ -338,52 +382,75 @@ export default function CaseDetailsPage() {
                       <span className="text-muted-foreground">немає</span>
                     )}
                   </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
-                  {editingCommentId === d.id ? (
-                    <div className="space-y-2">
-                      <Textarea
-                        value={commentDraft}
-                        onChange={(e) => setCommentDraft(e.target.value)}
-                        placeholder='Напиши коментар (наприклад: “потрібна краща якість скану”)'
-                      />
-                      <div className="flex gap-2">
-                        <Button
-                          onClick={() => {
-                            setDocError(null);
-                            updateDocM.mutate({
-                              docId: d.id,
-                              data: { comment: commentDraft.trim() ? commentDraft.trim() : "" },
-                            });
-                            setEditingCommentId(null);
-                            setCommentDraft("");
-                          }}
-                          disabled={updateDocM.isPending}
-                        >
-                          Зберегти
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          onClick={() => {
-                            setEditingCommentId(null);
-                            setCommentDraft("");
-                          }}
-                        >
-                          Скасувати
-                        </Button>
-                      </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>Заява (PDF)</CardTitle>
+        </CardHeader>
+
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            Натисни кнопку — система згенерує офіційну заяву по цій справі та збереже її в артефакти.
+          </p>
+
+          <Button onClick={() => pdfM.mutate()} disabled={pdfM.isPending}>
+            {pdfM.isPending ? "Генеруємо..." : "Сформувати заяву (PDF)"}
+          </Button>
+
+          {artifactsQ.isLoading ? (
+            <p className="text-sm">Завантаження артефактів…</p>
+          ) : artifactsQ.isError ? (
+            <p className="text-sm text-red-600">Не вдалося завантажити артефакти.</p>
+          ) : (artifactsQ.data?.length ?? 0) === 0 ? (
+            <p className="text-sm">Артефактів поки немає.</p>
+          ) : (
+            <div className="space-y-2">
+              {(artifactsQ.data as CaseArtifactItem[]).map((a) => (
+                <div key={a.id} className="rounded-md border p-2 text-sm">
+                  <div className="font-medium">{a.title}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {a.type} · {a.created_at ? new Date(a.created_at).toLocaleString("uk-UA") : "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Історія</CardTitle>
+        </CardHeader>
+
+        <CardContent className="space-y-3">
+          {historyQ.isLoading ? (
+            <p className="text-sm">Завантаження історії…</p>
+          ) : historyQ.isError ? (
+            <p className="text-sm text-red-600">Не вдалося завантажити історію.</p>
+          ) : (historyQ.data ?? []).length === 0 ? (
+            <p className="text-sm text-muted-foreground">Історія порожня.</p>
+          ) : (
+            <div className="space-y-2">
+              {(historyQ.data as CaseHistoryItem[]).map((h) => (
+                <div key={h.id} className="rounded-lg border p-3">
+                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="text-sm font-medium">{h.comment}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {formatDate(h.created_at)}
                     </div>
-                  ) : (
-                    <Button
-                      variant="secondary"
-                      onClick={() => {
-                        setDocError(null);
-                        setEditingCommentId(d.id);
-                        setCommentDraft(d.comment ?? "");
-                      }}
-                    >
-                      Редагувати коментар
-                    </Button>
-                  )}
+                  </div>
+
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Статус: <span className="font-medium">{statusUa(h.status)}</span>
+                  </div>
                 </div>
               ))}
             </div>
