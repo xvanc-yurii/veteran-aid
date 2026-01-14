@@ -5,6 +5,8 @@ class UserPublic(BaseModel):
     email: EmailStr
     role: str
     status: str
+    full_name: str | None = None
+    region: str | None = None
 
     class Config:
         from_attributes = True

@@ -7,7 +7,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import axios from "axios";
 import type { VariantProps } from "class-variance-authority";
 
-import { fetchCaseById, generateCaseApplicationPdf, type CaseItem } from "@/api/cases";
+import { askCaseAI } from "@/api/cases-ai";
+import { fetchCaseById, type CaseItem } from "@/api/cases";
 import { fetchBenefits, type BenefitItem } from "@/api/benefits";
 import {
   fetchCaseDocuments,
@@ -18,12 +19,17 @@ import {
   type CaseDocumentStatus,
 } from "@/api/case-documents";
 import { fetchCaseHistory, type CaseHistoryItem } from "@/api/case-history";
-import { fetchCaseArtifacts, generateApplicationPdf, type CaseArtifactItem } from "@/api/case-artefacts";
+import {
+  fetchCaseArtifacts,
+  generateApplicationPdf,
+  type CaseArtifactItem,
+} from "@/api/case-artefacts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge, badgeVariants } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
+import { Separator } from "@/components/ui/separator";
 import {
   Select,
   SelectContent,
@@ -130,8 +136,11 @@ export default function CaseDetailsPage() {
   }, [params]);
 
   const [docError, setDocError] = useState<string | null>(null);
-  const [editingCommentId, setEditingCommentId] = useState<number | null>(null);
-  const [commentDraft, setCommentDraft] = useState<string>("");
+  const [aiQuestion, setAiQuestion] = useState("");
+  const [aiAnswer, setAiAnswer] = useState<string | null>(null);
+
+  // для красивого file input (щоб не було російського тексту)
+  const [pickedFiles, setPickedFiles] = useState<Record<number, string>>({});
 
   const caseQ = useQuery({
     queryKey: ["case", caseId],
@@ -157,10 +166,10 @@ export default function CaseDetailsPage() {
   });
 
   const artifactsQ = useQuery({
-  queryKey: ["case-artifacts", caseId],
-  queryFn: () => fetchCaseArtifacts(caseId as number),
-  enabled: caseId !== null,
-});
+    queryKey: ["case-artifacts", caseId],
+    queryFn: () => fetchCaseArtifacts(caseId as number),
+    enabled: caseId !== null,
+  });
 
   const updateDocM = useMutation({
     mutationFn: (payload: {
@@ -178,7 +187,14 @@ export default function CaseDetailsPage() {
   const uploadM = useMutation({
     mutationFn: (p: { docId: number; file: File }) =>
       uploadCaseDocument(caseId as number, p.docId, p.file),
-    onSuccess: async () => {
+    onSuccess: async (_, vars) => {
+      // очистимо обраний файл у UI
+      setPickedFiles((prev) => {
+        const next = { ...prev };
+        delete next[vars.docId];
+        return next;
+      });
+
       await qc.invalidateQueries({ queryKey: ["case-history", caseId] });
       await qc.invalidateQueries({ queryKey: ["case-documents", caseId] });
       await qc.invalidateQueries({ queryKey: ["case", caseId] });
@@ -186,33 +202,28 @@ export default function CaseDetailsPage() {
     onError: (e) => setDocError(getAxiosDetail(e) ?? "Не вдалося завантажити файл"),
   });
 
-  // ✅ PDF генерація + скачування
   const pdfM = useMutation({
-  mutationFn: () => generateApplicationPdf(caseId as number),
-  onSuccess: async (blob) => {
-    // ⬇️ 1) відкрити/скачати PDF
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `zayava_case_${caseId}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    mutationFn: () => generateApplicationPdf(caseId as number),
+    onSuccess: async (blob) => {
+      downloadBlob(blob, `zayava_case_${caseId}.pdf`);
+      await qc.invalidateQueries({ queryKey: ["case-artifacts", caseId] });
+      await qc.invalidateQueries({ queryKey: ["case-history", caseId] });
+    },
+    onError: (e) => setDocError(getAxiosDetail(e) ?? "Не вдалося згенерувати PDF"),
+  });
 
-    // ⬇️ 2) оновити дані
-    await qc.invalidateQueries({ queryKey: ["case-artifacts", caseId] });
-    await qc.invalidateQueries({ queryKey: ["case-history", caseId] }); // ✅ крок 3
-  },
-  onError: (e) => setDocError(getAxiosDetail(e) ?? "Не вдалося згенерувати PDF"),
-});
-
-
-  
+  const askAiM = useMutation({
+    mutationFn: (q: string) => askCaseAI(caseId as number, q),
+    onSuccess: (res) => setAiAnswer(res.answer),
+    onError: (e) => {
+      setAiAnswer(null);
+      setDocError(getAxiosDetail(e) ?? "Не вдалося отримати відповідь від AI");
+    },
+  });
 
   if (caseId === null) {
     return (
-      <main className="mx-auto max-w-5xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10">
         <p className="text-red-600">Некоректний id справи.</p>
         <Link href="/cases" className="text-sm underline">
           ← Назад до справ
@@ -223,7 +234,7 @@ export default function CaseDetailsPage() {
 
   if (caseQ.isLoading) {
     return (
-      <main className="mx-auto max-w-5xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10">
         <p>Завантаження…</p>
       </main>
     );
@@ -231,7 +242,7 @@ export default function CaseDetailsPage() {
 
   if (caseQ.isError || !caseQ.data) {
     return (
-      <main className="mx-auto max-w-5xl px-4 py-10">
+      <main className="mx-auto max-w-6xl px-4 py-10">
         <p className="text-red-600">Не вдалося завантажити справу.</p>
         <Link href="/cases" className="text-sm underline">
           ← Назад до справ
@@ -244,10 +255,13 @@ export default function CaseDetailsPage() {
 
   const benefits = (benefitsQ.data ?? []) as BenefitItem[];
   const benefitTitle =
-    benefits.find((b) => b.id === item.benefit_id)?.title ?? `ID: ${item.benefit_id}`;
+    benefits.find((b) => b.id === item.benefit_id)?.title ??
+    `ID: ${item.benefit_id}`;
 
   const title = item.title?.trim() ? item.title.trim() : "Без назви";
-  const description = item.description?.trim() ? item.description.trim() : "Опис відсутній";
+  const description = item.description?.trim()
+    ? item.description.trim()
+    : "Опис відсутній";
 
   const docs: CaseDocumentItem[] = docsQ.data ?? [];
   const total = docs.length;
@@ -258,53 +272,110 @@ export default function CaseDetailsPage() {
   const percent = total > 0 ? Math.round((approved / total) * 100) : 0;
 
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10 space-y-6">
-      <Link href="/cases" className="text-sm underline">
-        ← Назад до справ
-      </Link>
+    <main className="mx-auto max-w-6xl px-4 py-10">
+      <div className="mb-6 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <Link href="/cases" className="text-sm underline">
+          ← Назад до справ
+        </Link>
 
-      <Card>
-        <CardHeader className="space-y-3">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-sm text-muted-foreground">
+          ID справи: <span className="font-medium text-foreground">{caseId}</span>
+        </div>
+      </div>
+
+      {/* Верх: справа + AI */}
+      <div className="grid gap-6 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader className="space-y-2">
             <CardTitle className="text-3xl">{title}</CardTitle>
-          </div>
-        </CardHeader>
+            <div className="text-sm text-muted-foreground">
+              Створено: {formatDate(item.created_at)}
+            </div>
+          </CardHeader>
 
-        <CardContent className="space-y-2 text-sm">
-          <div>
-            <span className="font-semibold">Статус:</span> {statusUa(item.status)}
-          </div>
+          <CardContent className="space-y-4 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="outline">{statusUa(item.status)}</Badge>
+              <span className="text-muted-foreground">·</span>
+              <span>
+                <span className="font-semibold">Пільга:</span> {benefitTitle}
+              </span>
+            </div>
 
-          <div>
-            <span className="font-semibold">Пільга:</span> {benefitTitle}
-          </div>
+            <Separator />
 
-          <div>
-            <span className="font-semibold">Опис:</span> {description}
-          </div>
+            <div className="space-y-1">
+              <div className="font-semibold">Опис</div>
+              <div className="text-muted-foreground">{description}</div>
+            </div>
+          </CardContent>
+        </Card>
 
-          <div>
-            <span className="font-semibold">Створено:</span> {formatDate(item.created_at)}
-          </div>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>AI-помічник</CardTitle>
+          </CardHeader>
 
-      <Card>
-        <CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Запитай, яких документів не вистачає або що робити далі.
+            </p>
+
+            <Textarea
+              value={aiQuestion}
+              onChange={(e) => setAiQuestion(e.target.value)}
+              placeholder="Наприклад: Які наступні кроки?"
+            />
+
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={() => {
+                  const q = aiQuestion.trim();
+                  if (!q) return;
+                  setDocError(null);
+                  askAiM.mutate(q);
+                }}
+                disabled={askAiM.isPending}
+              >
+                {askAiM.isPending ? "Думаю…" : "Запитати"}
+              </Button>
+
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  setAiQuestion("");
+                  setAiAnswer(null);
+                }}
+              >
+                Очистити
+              </Button>
+            </div>
+
+            {aiAnswer ? (
+              <div className="rounded-lg border p-3 text-sm whitespace-pre-wrap">
+                {aiAnswer}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Документи */}
+      <Card className="mt-6">
+        <CardHeader className="space-y-1">
           <CardTitle>Документи</CardTitle>
+          <div className="text-sm text-muted-foreground">
+            Готовність: <span className="font-medium text-foreground">{percent}%</span> ·
+            Всього: <span className="font-medium text-foreground">{total}</span> ·
+            Потрібні: <span className="font-medium text-foreground">{required}</span> ·
+            Завантажені: <span className="font-medium text-foreground">{uploaded}</span> ·
+            Погоджені: <span className="font-medium text-foreground">{approved}</span> ·
+            Відхилені: <span className="font-medium text-foreground">{rejected}</span>
+          </div>
         </CardHeader>
 
         <CardContent className="space-y-4">
-          <div className="text-sm">
-            <span className="font-semibold">Готовність:</span> {percent}% ·{" "}
-            <span className="font-semibold">Всього:</span> {total} ·{" "}
-            <span className="font-semibold">Потрібні:</span> {required} ·{" "}
-            <span className="font-semibold">Завантажені:</span> {uploaded} ·{" "}
-            <span className="font-semibold">Погоджені:</span> {approved} ·{" "}
-            <span className="font-semibold">Відхилені:</span> {rejected}
-          </div>
-
-          {docError && <p className="text-sm text-red-600">{docError}</p>}
+          {docError ? <p className="text-sm text-red-600">{docError}</p> : null}
 
           {docsQ.isLoading ? (
             <p className="text-sm">Завантаження документів…</p>
@@ -314,93 +385,132 @@ export default function CaseDetailsPage() {
             <p className="text-sm">Документів немає.</p>
           ) : (
             <div className="space-y-3">
-              {docs.map((d) => (
-                <div key={d.id} className="rounded-lg border p-3 space-y-3">
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div className="space-y-1">
-                      <div className="font-semibold">{d.title}</div>
-                      <div className="text-xs text-muted-foreground">ID: {d.id}</div>
+              {docs.map((d) => {
+                const pickedName = pickedFiles[d.id];
+                const isUploadingThis = uploadM.isPending && uploadM.variables?.docId === d.id;
+                const fileLabelId = `case-doc-file-${d.id}`;
+
+                return (
+                  <div key={d.id} className="rounded-xl border p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="space-y-1">
+                        <div className="text-base font-semibold">{d.title}</div>
+                        <div className="text-xs text-muted-foreground">Документ ID: {d.id}</div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant={docStatusBadgeVariant(d.status)}>
+                          {docStatusUa(d.status)}
+                        </Badge>
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-2">
-                      <Badge variant={docStatusBadgeVariant(d.status)}>
-                        {docStatusUa(d.status)}
-                      </Badge>
+                    <Separator className="my-4" />
 
-                      <Select
-                        value={d.status}
-                        onValueChange={(v) => {
-                          setDocError(null);
-                          updateDocM.mutate({
-                            docId: d.id,
-                            data: { status: v as CaseDocumentStatus },
-                          });
-                        }}
-                      >
-                      </Select>
+                    {/* Файл + upload (без російського тексту) */}
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="text-sm">
+                        <div className="font-semibold">Файл</div>
+
+                        <div className="mt-1">
+                          {d.file_name ? (
+                            <a
+                              className="underline"
+                              href={getCaseDocumentDownloadUrl(caseId, d.id)}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {d.file_name}
+                            </a>
+                          ) : (
+                            <span className="text-muted-foreground">Не завантажено</span>
+                          )}
+                        </div>
+
+                        {pickedName ? (
+                          <div className="mt-2 text-xs text-muted-foreground">
+                            Обрано: <span className="font-medium text-foreground">{pickedName}</span>
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-col gap-2 sm:items-end">
+                        <input
+                          id={fileLabelId}
+                          className="hidden"
+                          type="file"
+                          accept=".pdf,.png,.jpg,.jpeg"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            setPickedFiles((prev) => ({ ...prev, [d.id]: f.name }));
+                          }}
+                        />
+
+                        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                          <Button asChild variant="secondary">
+                            <label htmlFor={fileLabelId} className="cursor-pointer">
+                              Обрати файл
+                            </label>
+                          </Button>
+
+                          <Button
+                            onClick={() => {
+                              const input = document.getElementById(fileLabelId) as HTMLInputElement | null;
+                              const f = input?.files?.[0];
+                              if (!f) {
+                                setDocError("Спочатку обери файл.");
+                                return;
+                              }
+                              setDocError(null);
+                              uploadM.mutate({ docId: d.id, file: f });
+
+                              // очистимо input (щоб можна було обрати той самий файл ще раз)
+                              input.value = "";
+                            }}
+                            disabled={uploadM.isPending || !pickedFiles[d.id]}
+                          >
+                            {isUploadingThis ? "Завантажую…" : "Завантажити"}
+                          </Button>
+                        </div>
+
+                        <div className="text-xs text-muted-foreground sm:text-right">
+                          Формати: PDF/PNG/JPG
+                        </div>
+                      </div>
                     </div>
-                  </div>
 
-                  {/* ✅ Файл + завантаження */}
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <Separator className="my-4" />
+
                     <div className="text-sm">
-                      <span className="font-semibold">Файл:</span>{" "}
-                      {d.file_name ? (
-                        <a
-                          className="underline"
-                          href={getCaseDocumentDownloadUrl(caseId, d.id)}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          {d.file_name}
-                        </a>
+                      <span className="font-semibold">Коментар:</span>{" "}
+                      {d.comment?.trim() ? (
+                        d.comment
                       ) : (
-                        <span className="text-muted-foreground">не завантажено</span>
+                        <span className="text-muted-foreground">немає</span>
                       )}
                     </div>
-
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="file"
-                        accept=".pdf,.png,.jpg,.jpeg"
-                        onChange={(e) => {
-                          const f = e.target.files?.[0];
-                          if (!f) return;
-                          setDocError(null);
-                          uploadM.mutate({ docId: d.id, file: f });
-                          e.currentTarget.value = "";
-                        }}
-                      />
-                    </div>
                   </div>
-
-                  <div className="text-sm">
-                    <span className="font-semibold">Коментар:</span>{" "}
-                    {d.comment?.trim() ? (
-                      d.comment
-                    ) : (
-                      <span className="text-muted-foreground">немає</span>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardContent>
       </Card>
 
-      <Card>
+      {/* PDF */}
+      <Card className="mt-6">
         <CardHeader>
           <CardTitle>Заява (PDF)</CardTitle>
         </CardHeader>
 
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">
-            Натисни кнопку — система згенерує офіційну заяву по цій справі та збереже її в артефакти.
+            Натисни кнопку — система згенерує заяву та збереже її в артефакти.
           </p>
 
           <Button onClick={() => pdfM.mutate()} disabled={pdfM.isPending}>
-            {pdfM.isPending ? "Генеруємо..." : "Сформувати заяву (PDF)"}
+            {pdfM.isPending ? "Генеруємо…" : "Сформувати заяву (PDF)"}
           </Button>
 
           {artifactsQ.isLoading ? (
@@ -412,10 +522,13 @@ export default function CaseDetailsPage() {
           ) : (
             <div className="space-y-2">
               {(artifactsQ.data as CaseArtifactItem[]).map((a) => (
-                <div key={a.id} className="rounded-md border p-2 text-sm">
+                <div key={a.id} className="rounded-lg border p-3 text-sm">
                   <div className="font-medium">{a.title}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {a.type} · {a.created_at ? new Date(a.created_at).toLocaleString("uk-UA") : "—"}
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {a.type} ·{" "}
+                    {a.created_at
+                      ? new Date(a.created_at).toLocaleString("uk-UA")
+                      : "—"}
                   </div>
                 </div>
               ))}
@@ -424,8 +537,8 @@ export default function CaseDetailsPage() {
         </CardContent>
       </Card>
 
-
-      <Card>
+      {/* Історія */}
+      <Card className="mt-6">
         <CardHeader>
           <CardTitle>Історія</CardTitle>
         </CardHeader>
@@ -440,16 +553,19 @@ export default function CaseDetailsPage() {
           ) : (
             <div className="space-y-2">
               {(historyQ.data as CaseHistoryItem[]).map((h) => (
-                <div key={h.id} className="rounded-lg border p-3">
-                  <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <div key={h.id} className="rounded-xl border p-4">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <div className="text-sm font-medium">{h.comment}</div>
                     <div className="text-xs text-muted-foreground">
                       {formatDate(h.created_at)}
                     </div>
                   </div>
 
-                  <div className="text-xs text-muted-foreground mt-1">
-                    Статус: <span className="font-medium">{statusUa(h.status)}</span>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Статус:{" "}
+                    <span className="font-medium text-foreground">
+                      {statusUa(h.status)}
+                    </span>
                   </div>
                 </div>
               ))}

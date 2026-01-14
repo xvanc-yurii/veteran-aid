@@ -7,11 +7,12 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createCase, fetchCases, type CaseItem } from "@/api/cases";
 import { fetchBenefits, type BenefitItem } from "@/api/benefits";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 
 type ApiErrorBody =
   | { detail?: string }
@@ -33,6 +34,23 @@ function extractErrorMessage(err: unknown): string {
     return detail ?? response?.statusText ?? "Запит не вдався";
   }
   return "Запит не вдався";
+}
+
+function statusUa(status?: string | null) {
+  switch (status) {
+    case "draft":
+      return "Чернетка";
+    case "submitted":
+      return "Подано";
+    case "in_review":
+      return "На розгляді";
+    case "approved":
+      return "Схвалено";
+    case "done":
+      return "Завершено";
+    default:
+      return status ?? "—";
+  }
 }
 
 export default function CasesPage() {
@@ -81,7 +99,6 @@ export default function CasesPage() {
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!title.trim()) return;
-
     if (benefitId === "") return;
 
     createM.mutate({
@@ -91,112 +108,160 @@ export default function CasesPage() {
     });
   };
 
+  const list: CaseItem[] = casesQ.data ?? [];
+
   return (
-    <main className="mx-auto max-w-5xl px-4 py-10">
-      <h1 className="text-4xl font-bold">Справи</h1>
+    <main className="mx-auto max-w-6xl px-4 py-10 space-y-6">
+      {/* Header */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Справи</h1>
+          <p className="text-sm text-muted-foreground">
+            Створюй справи по пільгах та відстежуй статуси документів.
+          </p>
+        </div>
+
+        <div className="text-sm text-muted-foreground">
+          Всього: <span className="font-medium text-foreground">{list.length}</span>
+        </div>
+      </div>
 
       {error ? (
-        <p className="mt-4 text-sm text-red-600">{extractErrorMessage(error)}</p>
+        <Card className="border-red-200">
+          <CardContent className="pt-6">
+            <p className="text-sm text-red-600">{extractErrorMessage(error)}</p>
+          </CardContent>
+        </Card>
       ) : null}
 
-      <Card className="mt-8">
-        <CardHeader>
-          <CardTitle>Створити справу</CardTitle>
-        </CardHeader>
+      {/* Layout: 2 columns on desktop */}
+      <div className="grid gap-6 lg:grid-cols-[420px_1fr] lg:items-start">
+        {/* Create case */}
+        <Card className="rounded-2xl">
+          <CardHeader>
+            <CardTitle>Створити справу</CardTitle>
+            <CardDescription>
+              Обери пільгу, введи назву — і система створить справу з документами.
+            </CardDescription>
+          </CardHeader>
 
-        <CardContent>
-          <form onSubmit={onSubmit} className="grid gap-4 max-w-xl">
-            <div className="grid gap-2">
-              <Label htmlFor="benefit">Пільга</Label>
-              <select
-                id="benefit"
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={benefitId}
-                onChange={(e) => setBenefitId(e.target.value ? Number(e.target.value) : "")}
-                disabled={(benefitsQ.data?.length ?? 0) === 0}
+          <CardContent>
+            <form onSubmit={onSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="benefit">Пільга</Label>
+                <select
+                  id="benefit"
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  value={benefitId}
+                  onChange={(e) => setBenefitId(e.target.value ? Number(e.target.value) : "")}
+                  disabled={(benefitsQ.data?.length ?? 0) === 0}
+                >
+                  {(benefitsQ.data?.length ?? 0) === 0 ? (
+                    <option value="">Немає доступних пільг</option>
+                  ) : (
+                    benefitsQ.data!.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.title}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="title">Назва</Label>
+                <Input
+                  id="title"
+                  value={title}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
+                  placeholder="Напр. Компенсація проїзду"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="desc">Опис (необов’язково)</Label>
+                <Textarea
+                  id="desc"
+                  value={description}
+                  onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                    setDescription(e.target.value)
+                  }
+                  placeholder="Короткий опис..."
+                  className="min-h-[110px]"
+                />
+              </div>
+
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={
+                  loading ||
+                  createM.isPending ||
+                  benefitId === "" ||
+                  !title.trim() ||
+                  (benefitsQ.data?.length ?? 0) === 0
+                }
               >
-                {(benefitsQ.data?.length ?? 0) === 0 ? (
-                  <option value="">Немає доступних пільг</option>
-                ) : (
-                  benefitsQ.data!.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.title} (id: {b.id})
-                    </option>
-                  ))
-                )}
-              </select>
-            </div>
+                {createM.isPending ? "Створюю..." : "Створити справу"}
+              </Button>
 
-            <div className="grid gap-2">
-              <Label htmlFor="title">Назва</Label>
-              <Input
-                id="title"
-                value={title}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTitle(e.target.value)}
-                placeholder="Напр. Компенсація проїзду"
-              />
-            </div>
+              {createM.error ? (
+                <p className="text-sm text-red-600">{extractErrorMessage(createM.error)}</p>
+              ) : null}
+            </form>
+          </CardContent>
+        </Card>
 
-            <div className="grid gap-2">
-              <Label htmlFor="desc">Опис (необов’язково)</Label>
-              <Textarea
-                id="desc"
-                value={description}
-                onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setDescription(e.target.value)}
-                placeholder="Короткий опис..."
-              />
-            </div>
+        {/* List */}
+        <Card className="rounded-2xl">
+          <CardHeader>
+            <CardTitle>Список</CardTitle>
+            <CardDescription>Натисни на справу, щоб відкрити деталі та документи.</CardDescription>
+          </CardHeader>
 
-            <Button
-              type="submit"
-              disabled={
-                loading ||
-                createM.isPending ||
-                benefitId === "" ||
-                !title.trim() ||
-                (benefitsQ.data?.length ?? 0) === 0
-              }
-            >
-              {createM.isPending ? "Створюю..." : "Створити справу"}
-            </Button>
+          <CardContent>
+            {loading ? (
+              <p className="text-sm text-muted-foreground">Завантаження...</p>
+            ) : list.length === 0 ? (
+              <div className="rounded-lg border border-dashed p-6 text-center">
+                <p className="text-sm text-muted-foreground">Поки немає справ</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Створи першу справу у формі зліва.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {list.map((c: CaseItem) => {
+                  const caseTitle = c.title?.trim() ? c.title : "Без назви";
+                  const benefitTitle =
+                    benefitsMap.get(c.benefit_id)?.title ?? `Пільга #${c.benefit_id}`;
 
-            {createM.error ? (
-              <p className="text-sm text-red-600">{extractErrorMessage(createM.error)}</p>
-            ) : null}
-          </form>
-        </CardContent>
-      </Card>
+                  return (
+                    <div key={c.id} className="rounded-xl border p-4">
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="space-y-1">
+                          <Link
+                            href={`/cases/${c.id}`}
+                            className="font-medium hover:underline"
+                          >
+                            {caseTitle}
+                          </Link>
+                          <div className="text-xs text-muted-foreground">{benefitTitle}</div>
+                        </div>
 
-      <Card className="mt-8">
-        <CardHeader>
-          <CardTitle>Список</CardTitle>
-        </CardHeader>
-
-        <CardContent>
-          {loading ? (
-            <p className="text-sm text-muted-foreground">Завантаження...</p>
-          ) : (casesQ.data?.length ?? 0) === 0 ? (
-            <p className="text-sm text-muted-foreground">Поки немає справ</p>
-          ) : (
-            <ul className="list-disc pl-5 space-y-2">
-              {casesQ.data!.map((c: CaseItem) => {
-                const caseTitle = c.title?.trim() ? c.title : "Без назви";
-                const benefitTitle = benefitsMap.get(c.benefit_id)?.title ?? `Пільга #${c.benefit_id}`;
-
-                return (
-                  <li key={c.id} className="text-sm">
-                    <Link href={`/cases/${c.id}`} className="text-blue-600 hover:underline">
-                      {caseTitle}
-                    </Link>
-                    <span className="text-muted-foreground"> — {c.status}</span>
-                    <span className="text-muted-foreground"> — {benefitTitle}</span>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </CardContent>
-      </Card>
+                        <div className="flex items-center gap-2">
+                          <Badge variant="secondary">{statusUa(c.status)}</Badge>
+                          <span className="text-xs text-muted-foreground">ID: {c.id}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </main>
   );
 }

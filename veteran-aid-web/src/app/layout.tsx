@@ -28,12 +28,10 @@ export default function RootLayout({
                   <Link href="/benefits">Пільги</Link>
                 </nav>
               </div>
-              <Link
-                href="/login"
-                className="rounded border px-3 py-1 text-sm"
-              >
-                Вхід
-              </Link>
+              <nav className="flex gap-4 text-sm">
+                  <Link href="/login" className="rounded border px-3 py-1 text-sm">Увійти</Link>
+                  <Link href="/register" className="rounded border px-3 py-1 text-sm">Реєстарція</Link>
+                </nav>
             </div>
           </header>
 

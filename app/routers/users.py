@@ -4,6 +4,7 @@ from app.models.user import User
 from app.schemas.user import UserPublic, UserProfileUpdate
 from sqlalchemy.orm import Session
 from app.db.session import get_db
+from pydantic import BaseModel
 
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -23,3 +24,22 @@ def update_profile(
     current_user.status = data.status
     db.commit()
     return {"updated": True}
+
+class UserUpdateMe(BaseModel):
+    full_name: str | None = None
+    region: str | None = None
+
+@router.patch("/me")
+def update_me(
+    data: UserUpdateMe,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if data.full_name is not None:
+        current_user.full_name = data.full_name.strip() or None
+    if data.region is not None:
+        current_user.region = data.region.strip() or None
+
+    db.commit()
+    db.refresh(current_user)
+    return current_user

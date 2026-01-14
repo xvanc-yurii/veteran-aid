@@ -1,5 +1,5 @@
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 import mimetypes
 import shutil
@@ -36,6 +36,54 @@ router = APIRouter(prefix="/cases", tags=["cases"])
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOADS_DIR = BASE_DIR / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024  # 10 MB
+
+ALLOWED_MIME_TYPES = {
+    "application/pdf",
+    "image/jpeg",
+    "image/png",
+}
+
+ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+
+def _get_extension(filename: str) -> str:
+    return Path(filename or "").suffix.lower()
+
+
+def _validate_upload_file(file: UploadFile) -> None:
+    filename = file.filename or ""
+    ext = _get_extension(filename)
+
+    # 1) extension
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недопустиме розширення файлу ({ext}). Дозволено: pdf, jpg, jpeg, png",
+        )
+
+    # 2) mime-type
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_MIME_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Недопустимий тип файлу ({content_type}). Дозволено: PDF/JPEG/PNG",
+        )
+
+
+def _validate_magic_bytes(ext: str, first_bytes: bytes) -> None:
+    # мінімальна перевірка сигнатур (щоб не підсунули підробку)
+    if ext == ".pdf":
+        if not first_bytes.startswith(b"%PDF"):
+            raise HTTPException(status_code=400, detail="Файл не схожий на валідний PDF")
+    elif ext in {".jpg", ".jpeg"}:
+        # JPEG починається з FF D8 FF
+        if len(first_bytes) < 3 or first_bytes[:3] != b"\xFF\xD8\xFF":
+            raise HTTPException(status_code=400, detail="Файл не схожий на валідний JPEG")
+    elif ext == ".png":
+        # PNG сигнатура: 89 50 4E 47 0D 0A 1A 0A
+        if len(first_bytes) < 8 or first_bytes[:8] != b"\x89PNG\r\n\x1a\n":
+            raise HTTPException(status_code=400, detail="Файл не схожий на валідний PNG")
 
 
 def _safe_filename(name: str) -> str:
@@ -287,19 +335,62 @@ def upload_case_document(
     if not d:
         raise HTTPException(status_code=404, detail="Document not found")
 
+    # ✅ validation: ext + content-type
+    _validate_upload_file(file)
+    ext = _get_extension(file.filename or "")
+
     case_dir = UPLOADS_DIR / f"case_{case_id}"
     case_dir.mkdir(parents=True, exist_ok=True)
 
-    original_name = _safe_filename(file.filename or "file")
-    filename = _safe_filename(f"doc_{doc_id}_{original_name}")
-    file_path = case_dir / filename
+    safe_original = _safe_filename(file.filename or f"document{ext}")
+    stored_name = f"doc_{doc_id}_{int(datetime.utcnow().timestamp())}_{safe_original}"
+    file_path = case_dir / stored_name
 
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # ✅ stream save with size limit + magic bytes
+    size = 0
+    first_chunk = b""
 
-    # ✅ записуємо тільки ті поля, які точно є в БД
-    d.file_name = original_name
+    try:
+        with file_path.open("wb") as buffer:
+            while True:
+                chunk = file.file.read(1024 * 1024)  # 1MB
+                if not chunk:
+                    break
+
+                if not first_chunk:
+                    first_chunk = chunk[:16]  # enough for signature checks
+
+                size += len(chunk)
+                if size > MAX_UPLOAD_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Файл занадто великий. Максимум {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB",
+                    )
+
+                buffer.write(chunk)
+
+        # сигнатура (магічні байти)
+        _validate_magic_bytes(ext, first_chunk)
+
+    except HTTPException:
+        # якщо зловили валідацію — прибрати частково записаний файл
+        if file_path.exists():
+            try:
+                file_path.unlink()
+            except Exception:
+                pass
+        raise
+
+    # ✅ update db (обережно з полями, якщо їх нема у твоїй БД)
+    d.file_name = file.filename
     d.file_path = str(file_path)
+
+    # якщо у БД немає content_type/size_bytes — прибери ці 2 рядки
+    if hasattr(d, "content_type"):
+        d.content_type = file.content_type
+    if hasattr(d, "size_bytes"):
+        d.size_bytes = size
+
     d.status = "uploaded"
 
     db.add(
@@ -323,10 +414,6 @@ def upload_case_document(
 
     db.commit()
     db.refresh(d)
-
-    if getattr(d, "comment", None) is None:
-        d.comment = ""  # type: ignore[attr-defined]
-
     return d
 
 

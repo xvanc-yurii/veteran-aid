@@ -17,23 +17,28 @@ export default function Navbar() {
 
           <nav className="flex items-center gap-4 text-sm">
             <Link className="hover:underline" href="/cases">
-              Cases
+              Справи
             </Link>
             <Link className="hover:underline" href="/benefits">
-              Benefits
+              Пільги
             </Link>
           </nav>
         </div>
 
-        <div>
+        <div className="flex items-center gap-2">
           {token ? (
             <Button variant="outline" onClick={logout}>
-              Logout
+              Вихід
             </Button>
           ) : (
-            <Button asChild>
-              <Link href="/login">Login</Link>
-            </Button>
+            <>
+              <Button variant="outline" asChild>
+                <Link href="/login">Вхід</Link>
+              </Button>
+              <Button asChild>
+                <Link href="/register">Реєстрація</Link>
+              </Button>
+            </>
           )}
         </div>
       </div>

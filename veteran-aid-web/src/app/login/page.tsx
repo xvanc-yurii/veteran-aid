@@ -59,7 +59,7 @@ export default function LoginPage() {
     <main className="mx-auto max-w-5xl px-4 py-10">
       <Card className="mx-auto max-w-md">
         <CardHeader>
-          <CardTitle>Login</CardTitle>
+          <CardTitle className="text-2xl">Вхід</CardTitle>
         </CardHeader>
 
         <CardContent>
@@ -71,7 +71,7 @@ export default function LoginPage() {
 
           <form onSubmit={onSubmit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="email">Ел. пошта</Label>
               <Input
                 id="email"
                 type="email"
@@ -84,7 +84,7 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password">Пароль</Label>
               <Input
                 id="password"
                 type="password"
@@ -97,7 +97,7 @@ export default function LoginPage() {
             </div>
 
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Signing in..." : "Sign in"}
+              {loading ? "Вхід..." : "Увійти"}
             </Button>
           </form>
         </CardContent>
